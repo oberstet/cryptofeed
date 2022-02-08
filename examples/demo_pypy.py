@@ -1,5 +1,6 @@
 import sys
 import time
+import platform
 from pprint import pprint
 from decimal import Decimal
 
@@ -11,6 +12,29 @@ from cryptofeed.exchanges import FTX, BinanceFutures, Bitfinex, Bitmex, Coinbase
 from cryptofeed.exchanges.kraken_futures import KrakenFutures
 from cryptofeed.exchanges.dydx import dYdX
 
+PYPY = platform.python_implementation() == 'PyPy'
+
+# 1. BINANCE_FUTURES
+# 2. BITFINEX
+# 3. BITMEX
+# 4. COINBASE
+# 5. DYDX
+# 6. FTX
+# 7. HUOBI_SWAP
+# 8. OKEX
+
+# ping -c 10 stream.binancefuture.com
+# ping -c 10 api.bitfinex.com
+# ping -c 10 www.bitmex.com
+# ping -c 10 ws-feed.pro.coinbase.com
+# ping -c 10 api.dydx.exchange
+# ping -c 10 ftx.com
+# ping -c 10 api.hbdm.com
+# ping -c 10 ws.okex.com
+
+
+QUOTE_TOKENS = ['USD', 'USDT', 'USDC', 'BUSD', 'DAI', 'BTC', 'ETH']
+
 
 async def ticker(t, receipt_timestamp):
     if t.timestamp is not None:
@@ -21,41 +45,48 @@ async def ticker(t, receipt_timestamp):
     # print(f'Ticker received at {receipt_timestamp}: {t}')
 
 
+TRADE_started = None
+TRADE_count = None
+
+
 async def trade(t, receipt_timestamp):
     assert isinstance(t.timestamp, float)
     assert isinstance(t.side, str)
     assert isinstance(t.amount, Decimal)
     assert isinstance(t.price, Decimal)
     assert isinstance(t.exchange, str)
-    # print(f"Trade received at {receipt_timestamp}: {t}")
+    global TRADE_started, TRADE_count
+    if TRADE_started is None:
+        TRADE_started = time.time_ns()
+        TRADE_count = 1
+    else:
+        TRADE_count += 1
+        now = time.time_ns()
+        duration = (now - TRADE_started) / 10**9
+        if duration > 1:
+            print('\n{} TRADE events/sec'.format(TRADE_count))
+            TRADE_started = None
 
+L2_BOOK_started = None
+L2_BOOK_count = None
+L2_BOOK_sum_dl = 0
 
-started = None
-count = None
-sum_dl = 0
 
 async def book(book, receipt_timestamp):
-    global started, count, sum_dl
-    if started is None:
-        started = time.time_ns()
-        count = 1
-        sum_dl = 0
+    global L2_BOOK_started, L2_BOOK_count, L2_BOOK_sum_dl
+    if L2_BOOK_started is None:
+        L2_BOOK_started = time.time_ns()
+        L2_BOOK_count = 1
+        L2_BOOK_sum_dl = 0
     else:
-        count += 1
+        L2_BOOK_count += 1
         now = time.time_ns()
-        duration = (now - started) / 10**9
+        duration = (now - L2_BOOK_started) / 10**9
         if book.delta:
-            sum_dl += len(book.delta[BID]) + len(book.delta[ASK])
+            L2_BOOK_sum_dl += len(book.delta[BID]) + len(book.delta[ASK])
         if duration > 1:
-            print('\n{} events/sec with {} entries average'.format(count, float(sum_dl) / float(count)))
-            started = None
-    # sys.stdout.write('.')
-    # sys.stdout.flush()
-    # print(f'Book received at {receipt_timestamp} for {book.exchange} - {book.symbol}, with {len(book.book)} entries. Top of book prices: {book.book.asks.index(0)[0]} - {book.book.bids.index(0)[0]}')
-    # if book.delta:
-    #     print(f"Delta from last book contains {len(book.delta[BID]) + len(book.delta[ASK])} entries.")
-    # if book.sequence_number:
-    #    assert isinstance(book.sequence_number, int)
+            print('\n{} L2_BOOK events/sec ({} book updates per event average)'.format(L2_BOOK_count, float(L2_BOOK_sum_dl) / float(L2_BOOK_count)))
+            L2_BOOK_started = None
 
 
 async def funding(f, receipt_timestamp):
@@ -81,18 +112,8 @@ async def liquidations(liquidation, receipt_timestamp):
 def main():
     config = {'log': {'filename': 'demo.log', 'level': 'INFO', 'disabled': False}}
 
-    # 2022-02-08 03:44:50,684 : INFO : BINANCE_FUTURES: feed shutdown starting...
-    # 2022-02-08 03:44:50,684 : INFO : BITFINEX: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : BITMEX: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : COINBASE: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : DYDX: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : FTX: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : HUOBI_SWAP: feed shutdown starting...
-    # 2022-02-08 03:44:50,685 : INFO : OKEX: feed shutdown starting...
-
-    quote_tokens = ['USD', 'USDT', 'USDC', 'BUSD', 'DAI', 'BTC', 'ETH']
-    print('*' * 100)
-    pprint(sorted(quote_tokens))
+    #print('*' * 100)
+    #pprint(sorted(QUOTE_TOKENS))
 
     all_pairs = {
         'binance': {},
@@ -106,34 +127,36 @@ def main():
     }
 
     tokens = [x.split('-')[0] for x in dYdX.symbols()]
-    print('*' * 100)
-    pprint(sorted(tokens))
+    #print('*' * 100)
+    #pprint(sorted(tokens))
 
     for e in all_pairs:
         for t in tokens:
             all_pairs[e][t] = 0
 
     dydx_pairs = dYdX.symbols()
+    for t in tokens:
+        all_pairs['dydx'][t] = 1
 
     binance_futures_pairs = []
     for p in BinanceFutures.symbols():
         pp = p.split('-')
-        if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+        if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
             binance_futures_pairs.append(p)
             all_pairs['binance'][pp[0]] += 1
 
     ftx_pairs = []
     for p in FTX.symbols():
         pp = p.split('-')
-        if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+        if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
             ftx_pairs.append(p)
             all_pairs['ftx'][pp[0]] += 1
 
-    if False:
+    if not PYPY:
         coinbase_pairs = []
         for p in Coinbase.symbols():
             pp = p.split('-')
-            if pp[0] in set(tokens) and pp[1] in quote_tokens:
+            if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS:
                 coinbase_pairs.append(p)
                 all_pairs['coinbase'][pp[0]] += 1
     else:
@@ -143,17 +166,17 @@ def main():
         kraken_futures_pairs = []
         for p in KrakenFutures.symbols():
             pp = p.split('-')
-            if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+            if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
                 kraken_futures_pairs.append(p)
                 # all_pairs['kraken'][pp[0]] += 1
     else:
         kraken_futures_pairs = None
 
-    if False:
+    if not PYPY:
         okex_pairs = []
         for p in OKEx.symbols():
             pp = p.split('-')
-            if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+            if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
                 okex_pairs.append(p)
                 all_pairs['okex'][pp[0]] += 1
     else:
@@ -163,7 +186,7 @@ def main():
         bybit_pairs = []
         for p in Bybit.symbols():
             pp = p.split('-')
-            if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+            if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
                 bybit_pairs.append(p)
                 # all_pairs['bybit'][pp[0]] += 1
     else:
@@ -172,25 +195,26 @@ def main():
     huobi_pairs = []
     for p in HuobiSwap.symbols():
         pp = p.split('-')
-        if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+        if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
             huobi_pairs.append(p)
             all_pairs['huobi'][pp[0]] += 1
 
     bitfinex_pairs = []
     for p in Bitfinex.symbols():
         pp = p.split('-')
-        if pp[0] in set(tokens) and len(pp) > 1 and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+        if pp[0] in set(tokens) and len(pp) > 1 and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
             bitfinex_pairs.append(p)
             all_pairs['bitfinex'][pp[0]] += 1
 
     bitmex_pairs = []
     for p in Bitmex.symbols():
         pp = p.split('-')
-        if pp[0] in set(tokens) and pp[1] in quote_tokens and len(pp) > 2 and pp[2] == 'PERP':
+        if pp[0] in set(tokens) and pp[1] in QUOTE_TOKENS and len(pp) > 2 and pp[2] == 'PERP':
             bitmex_pairs.append(p)
             all_pairs['bitmex'][pp[0]] += 1
 
-    print('*' * 100)
+    print('=' * 100)
+    print()
     if binance_futures_pairs:
         print('BinanceFutures {}'.format(len(binance_futures_pairs)))
     if bitfinex_pairs:
@@ -207,35 +231,74 @@ def main():
         print('HuobiSwap      {}'.format(len(huobi_pairs)))
     if okex_pairs:
         print('OKEx           {}'.format(len(okex_pairs)))
-    print('*' * 100)
 
-    # sys.exit(0)
+    s = 0
+    s += len(binance_futures_pairs)
+    s += len(bitfinex_pairs)
+    s += len(bitmex_pairs)
+    s += len(coinbase_pairs)
+    s += len(dydx_pairs)
+    s += len(ftx_pairs)
+    s += len(huobi_pairs)
+    s += len(okex_pairs)
+    print()
+    print('All            {}'.format(s))
+
+    print()
+    print('-' * 100)
+    print()
+
+    #pprint(all_pairs)
+    #print('*' * 100)
+
+    m = []
+    for t in sorted(tokens):
+        v = []
+        for e in sorted(all_pairs.keys()):
+            v.append(all_pairs[e][t])
+        m.append(v)
+
+    print('Exchanges:')
+    pprint(sorted(all_pairs.keys()))
+    print()
+    print('Base Assets:')
+    pprint(sorted(tokens))
+    print()
+    print('Quote Assets:')
+    pprint(sorted(QUOTE_TOKENS))
+    print()
+    print('Availability of Pairs (Perpetual Futures):')
+    pprint(m)
+    print()
+    print('=' * 100)
+
+    sys.exit(0)
 
     f = FeedHandler(config=config)
 
     if binance_futures_pairs:
-        f.add_feed(BinanceFutures(symbols=binance_futures_pairs, channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(BinanceFutures(symbols=binance_futures_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if bitfinex_pairs:
-        f.add_feed(Bitfinex(symbols=bitfinex_pairs, channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(Bitfinex(symbols=bitfinex_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if bitmex_pairs:
-        f.add_feed(Bitmex(timeout=5000, symbols=bitmex_pairs, channels=[L2_BOOK], callbacks={L2_BOOK:book}))
+        f.add_feed(Bitmex(timeout=5000, symbols=bitmex_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if coinbase_pairs:
-        f.add_feed(Coinbase(subscription={L2_BOOK: coinbase_pairs}, callbacks={L2_BOOK: book}))
+        f.add_feed(Coinbase(subscription={L2_BOOK: coinbase_pairs, TRADES: coinbase_pairs}, callbacks={L2_BOOK: book, TRADES: trade}))
 
     if dydx_pairs:
-        f.add_feed(dYdX(symbols=dYdX.symbols(), channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(dYdX(symbols=dYdX.symbols(), channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if ftx_pairs:
-        f.add_feed(FTX(checksum_validation=True, symbols=ftx_pairs, channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(FTX(checksum_validation=True, symbols=ftx_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if huobi_pairs:
-        f.add_feed(HuobiSwap(symbols=huobi_pairs, channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(HuobiSwap(symbols=huobi_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     if okex_pairs:
-        f.add_feed(OKEx(checksum_validation=True, symbols=okex_pairs, channels=[L2_BOOK], callbacks={L2_BOOK: book}))
+        f.add_feed(OKEx(checksum_validation=True, symbols=okex_pairs, channels=[L2_BOOK, TRADES], callbacks={L2_BOOK: book, TRADES: trade}))
 
     f.run()
 
