@@ -6,6 +6,7 @@ associated with this software.
 '''
 from datetime import datetime as dt
 from typing import Dict, Tuple, Union
+import iso8601
 
 from cryptofeed.defines import FUTURES, FX, OPTION, PERPETUAL, SPOT, CALL, PUT, CURRENCY
 
@@ -64,6 +65,11 @@ class Symbol:
             year, month, day = date[-2:], date[2:5], date[:2]
             months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
             month = Symbol.month_code(months.index(month) + 1)
+            return f"{year}{month}{day}"
+        if len(date) == 24:
+            # '2022-03-25T12:00:00.000Z'
+            d = iso8601.parse_date(date)
+            year, month, day = d.year, d.month, d.day
             return f"{year}{month}{day}"
 
         raise ValueError(f"Unable to parse expiration date: {date}")

@@ -9,3 +9,4 @@ cchardet
 uvloop; platform_system!='Windows'
 cython
 order_book==0.4.1
+iso8601

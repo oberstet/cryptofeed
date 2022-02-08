@@ -380,7 +380,7 @@ class Coinbase(Feed, CoinbaseRestMixin):
 
         for chan in self.subscription:
             await conn.write(json.dumps({"type": "subscribe",
-                                         "product_ids": self.subscription[chan],
+                                         "product_ids": list(self.subscription[chan]),
                                          "channels": [chan]
                                          }))
 
